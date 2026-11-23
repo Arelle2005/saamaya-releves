@@ -24,6 +24,8 @@ class Utilisateur(Base):
     role: Mapped[str] = mapped_column(String(10))
     code_marchand: Mapped[str | None] = mapped_column(ForeignKey("marchands.code"))
     mot_de_passe_hache: Mapped[str] = mapped_column(String(100))
+    tentatives_echouees: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    bloque_jusqua: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Paiement(Base):
