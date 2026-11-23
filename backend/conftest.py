@@ -1,0 +1,1 @@
+# Racine pytest : garantit que le package app est importable depuis backend/
