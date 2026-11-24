@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.auth import router as router_auth
 from app.imports import router as router_imports
+from app.releves import router as router_releves
 
 app = FastAPI(
     title="Saamaya — Espace relevés marchand",
@@ -10,6 +11,7 @@ app = FastAPI(
 )
 app.include_router(router_auth)
 app.include_router(router_imports)
+app.include_router(router_releves)
 
 
 @app.get("/sante")

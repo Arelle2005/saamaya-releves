@@ -1,7 +1,7 @@
 """Dépendances FastAPI : session base de données et utilisateur authentifié."""
 
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
@@ -45,4 +45,16 @@ def admin_requis(utilisateur: Utilisateur = Depends(utilisateur_courant)) -> Uti
 def marchand_requis(utilisateur: Utilisateur = Depends(utilisateur_courant)) -> Utilisateur:
     if utilisateur.role != "MARCHAND":
         raise HTTPException(status_code=403, detail="Accès réservé aux marchands.")
+    return utilisateur
+
+
+def marchand_isole(
+    request: Request, utilisateur: Utilisateur = Depends(marchand_requis)
+) -> Utilisateur:
+    # Le code marchand vient du JWT ; toute tentative de viser un autre marchand est refusée
+    code_demande = request.query_params.get("code_marchand")
+    if code_demande is not None and code_demande != utilisateur.code_marchand:
+        raise HTTPException(
+            status_code=403, detail="Accès aux données d'un autre marchand interdit."
+        )
     return utilisateur
