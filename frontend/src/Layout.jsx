@@ -1,16 +1,18 @@
 import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
+import { api } from "./api";
 
 export default function Layout({ children }) {
   const { utilisateur, deconnexion } = useAuth();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [exportEnCours, setExportEnCours] = useState(false);
 
   if (!utilisateur) return null;
 
   const isAdmin = utilisateur.role === "ADMIN";
-  
+
   const navItems = isAdmin
     ? [
         { path: "/", label: "Tableau de bord", icon: "M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" },
@@ -26,59 +28,103 @@ export default function Layout({ children }) {
 
   async function handleDeconnexion() {
     await deconnexion();
-    // SOLUTION SENIOR : window.location.replace force un rechargement complet.
-    // Cela vide la mémoire React, annule tout intercepteur 401 en cours,
-    // et garantit une URL propre "/login" sans paramètre "?session_expired=true".
     window.location.replace("/login");
   }
 
-  // Générer des initiales pour l'avatar
-  const initiales = utilisateur.identifiant 
-    ? utilisateur.identifiant.substring(0, 2).toUpperCase() 
+  // Export CSV direct depuis la sidebar (période : mois en cours)
+  async function handleExportReleve() {
+    if (exportEnCours) return;
+    setExportEnCours(true);
+    try {
+      const aujourdhui = new Date();
+      const debutMois = new Date(aujourdhui.getFullYear(), aujourdhui.getMonth(), 1);
+      const fmt = (d) => d.toISOString().slice(0, 10);
+      const reponse = await api(`/releve/export?du=${fmt(debutMois)}&au=${fmt(aujourdhui)}`);
+      if (!reponse.ok) {
+        alert("Échec de l'export. Vérifiez qu'il existe des paiements sur cette période.");
+        return;
+      }
+      const blob = await reponse.blob();
+      const url = URL.createObjectURL(blob);
+      const lien = document.createElement("a");
+      lien.href = url;
+      lien.download = `releve_${utilisateur.code_marchand}_${fmt(debutMois)}_${fmt(aujourdhui)}.csv`;
+      document.body.appendChild(lien);
+      lien.click();
+      lien.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Serveur injoignable. Vérifiez que le backend est démarré.");
+    } finally {
+      setExportEnCours(false);
+    }
+  }
+
+  const initiales = utilisateur.identifiant
+    ? utilisateur.identifiant.substring(0, 2).toUpperCase()
     : "U";
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    // h-screen + overflow-hidden : le scroll se fait uniquement dans <main>
+    <div className="flex h-screen overflow-hidden bg-slate-50">
       {/* Overlay mobile */}
       {mobileMenuOpen && (
-        <div 
+        <div
           className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
           onClick={() => setMobileMenuOpen(false)}
         />
       )}
 
-      {/* Sidebar Premium */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-64 bg-[#0A1628] text-white transition-transform duration-300 md:static md:translate-x-0 ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"}`}>
-        <div className="flex h-16 items-center border-b border-white/10 px-6">
+      {/* Sidebar fixe en hauteur, scrollable si contenu trop long */}
+      <aside className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col bg-[#0A1628] text-white transition-transform duration-300 md:static md:translate-x-0 ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="flex h-16 shrink-0 items-center border-b border-white/10 px-6">
           <img src="/images/logo-saamaya.png" alt="Saamaya" className="h-8 w-auto mr-3" />
           <span className="text-sm font-bold tracking-widest uppercase text-white">Saamaya</span>
         </div>
-        
-        <nav className="mt-6 space-y-1 px-3">
-          {navItems.map((item) => {
-            const active = isActive(item.path);
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                onClick={() => setMobileMenuOpen(false)}
-                className={`group flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium transition-all duration-200 ${
-                  active
-                    ? "bg-[#F5A623]/10 text-[#F5A623] border-l-4 border-[#F5A623]"
-                    : "text-slate-400 hover:bg-white/5 hover:text-white border-l-4 border-transparent"
-                }`}
+
+        <nav className="flex-1 overflow-y-auto px-3 py-4">
+          <div className="space-y-1">
+            {navItems.map((item) => {
+              const active = isActive(item.path);
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`group flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium transition-all duration-200 ${
+                    active
+                      ? "bg-[#F5A623]/10 text-[#F5A623] border-l-4 border-[#F5A623]"
+                      : "text-slate-400 hover:bg-white/5 hover:text-white border-l-4 border-transparent"
+                  }`}
+                >
+                  <svg className={`h-5 w-5 transition-colors ${active ? "text-[#F5A623]" : "text-slate-400 group-hover:text-white"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+                  </svg>
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
+
+          {/* Bouton Export pour les marchands, en bas de la nav */}
+          {!isAdmin && (
+            <div className="mt-6 border-t border-white/10 pt-4">
+              <button
+                onClick={handleExportReleve}
+                disabled={exportEnCours}
+                className="group flex w-full items-center gap-3 rounded-lg border-l-4 border-transparent px-3 py-3 text-sm font-medium text-slate-400 transition-all duration-200 hover:bg-white/5 hover:text-white disabled:opacity-60"
               >
-                <svg className={`h-5 w-5 transition-colors ${active ? "text-[#F5A623]" : "text-slate-400 group-hover:text-white"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d={item.icon} />
+                <svg className="h-5 w-5 text-slate-400 group-hover:text-[#F5A623]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
-                {item.label}
-              </Link>
-            );
-          })}
+                {exportEnCours ? "Export en cours…" : "Exporter mon relevé (CSV)"}
+              </button>
+            </div>
+          )}
         </nav>
 
-        {/* Footer de sidebar */}
-        <div className="absolute bottom-0 w-full border-t border-white/10 p-4">
+        {/* Profil utilisateur en bas de sidebar */}
+        <div className="shrink-0 border-t border-white/10 p-4">
           <div className="flex items-center gap-3 px-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#F5A623]/20 text-xs font-bold text-[#F5A623]">
               {initiales}
@@ -91,12 +137,11 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      {/* Contenu principal */}
-      <div className="flex flex-1 flex-col">
-        {/* Barre supérieure */}
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm md:px-8">
+      {/* Zone droite : header fixe + contenu scrollable */}
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <header className="shrink-0 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-sm md:px-8">
           <div className="flex items-center gap-4">
-            <button 
+            <button
               onClick={() => setMobileMenuOpen(true)}
               className="rounded-lg p-2 text-slate-500 hover:bg-slate-100 md:hidden"
               aria-label="Ouvrir le menu"
@@ -106,7 +151,7 @@ export default function Layout({ children }) {
               </svg>
             </button>
             <h1 className="text-lg font-semibold text-slate-900">
-              {navItems.find(n => n.path === location.pathname)?.label || "Tableau de bord"}
+              {navItems.find((n) => n.path === location.pathname)?.label || "Tableau de bord"}
             </h1>
           </div>
 
@@ -121,8 +166,8 @@ export default function Layout({ children }) {
           </button>
         </header>
 
-        {/* Zone de contenu */}
-        <main className="flex-1 p-4 md:p-8">
+        {/* Main scrollable indépendamment de la sidebar */}
+        <main className="flex-1 overflow-y-auto p-4 md:p-8">
           {children}
         </main>
       </div>
