@@ -19,13 +19,16 @@ def get_session():
 
 
 def utilisateur_courant(
+    request: Request,
     jeton: HTTPAuthorizationCredentials | None = Depends(schema_securite),
     session: Session = Depends(get_session),
 ) -> Utilisateur:
-    if jeton is None:
+    # En-tête Bearer explicite prioritaire (clients d'API) ; sinon cookie httpOnly (navigateur)
+    brut = jeton.credentials if jeton is not None else request.cookies.get("jeton")
+    if brut is None:
         raise HTTPException(status_code=401, detail="Authentification requise.")
     try:
-        contenu = decoder_jeton(jeton.credentials)
+        contenu = decoder_jeton(brut)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Session expirée, veuillez vous reconnecter.")
     except jwt.InvalidTokenError:

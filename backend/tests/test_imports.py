@@ -120,6 +120,7 @@ def test_statut_invalide(client):
 
 def test_import_reserve_admin(client):
     assert importer(client, jeton_marchand(client), CSV_14_LIGNES).status_code == 403
+    client.cookies.clear()
     assert client.post("/imports").status_code == 401
     assert client.get("/imports").status_code == 401
     assert client.get(

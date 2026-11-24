@@ -104,3 +104,18 @@ def test_moi_avec_jeton_valide(client):
     reponse = client.get("/auth/moi", headers={"Authorization": f"Bearer {jeton}"})
     assert reponse.status_code == 200
     assert reponse.json() == {"identifiant": "admin", "role": "ADMIN", "code_marchand": None}
+
+
+def test_cookie_httponly_pose_a_la_connexion(client):
+    reponse = connexion(client)
+    assert "jeton" in reponse.cookies
+    assert "HttpOnly" in reponse.headers["set-cookie"]
+    # Le cookie seul suffit : TestClient le renvoie automatiquement, sans en-tête Bearer
+    assert client.get("/auth/moi").status_code == 200
+
+
+def test_deconnexion_efface_le_cookie(client):
+    connexion(client)
+    reponse = client.post("/auth/deconnexion")
+    assert reponse.status_code == 200
+    assert client.get("/auth/moi").status_code == 401

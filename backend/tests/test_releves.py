@@ -208,4 +208,5 @@ def test_admin_refuse_sur_routes_marchand(client, db):
     admin = jeton(client, "admin", "admin-test")
     for chemin in ("/paiements", "/releve", "/releve/export"):
         assert client.get(chemin, params=PERIODE, headers=entetes(admin)).status_code == 403
+    client.cookies.clear()
     assert client.get("/paiements", params=PERIODE).status_code == 401

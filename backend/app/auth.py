@@ -3,7 +3,7 @@
 import math
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -38,7 +38,11 @@ class ProfilReponse(BaseModel):
 
 
 @router.post("/connexion", response_model=ConnexionReponse)
-def connexion(demande: ConnexionDemande, session: Session = Depends(get_session)):
+def connexion(
+    demande: ConnexionDemande,
+    response: Response,
+    session: Session = Depends(get_session),
+):
     utilisateur = session.scalar(
         select(Utilisateur).where(Utilisateur.identifiant == demande.identifiant)
     )
@@ -74,13 +78,24 @@ def connexion(demande: ConnexionDemande, session: Session = Depends(get_session)
     utilisateur.tentatives_echouees = 0
     utilisateur.bloque_jusqua = None
     session.commit()
+    jeton = creer_jeton(utilisateur)
+    # httpOnly : illisible en JavaScript ; secure=True à activer en production HTTPS
+    response.set_cookie(
+        "jeton", jeton, max_age=15 * 60, httponly=True, samesite="lax", secure=False, path="/"
+    )
     return ConnexionReponse(
-        jeton=creer_jeton(utilisateur),
+        jeton=jeton,
         identifiant=utilisateur.identifiant,
         role=utilisateur.role,
         code_marchand=utilisateur.code_marchand,
         expire_dans_secondes=15 * 60,
     )
+
+
+@router.post("/deconnexion")
+def deconnexion(response: Response):
+    response.delete_cookie("jeton", path="/")
+    return {"statut": "deconnecte"}
 
 
 @router.get("/moi", response_model=ProfilReponse)
