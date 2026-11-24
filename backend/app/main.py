@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from app.auth import router as router_auth
+from app.imports import router as router_imports
 
 app = FastAPI(
     title="Saamaya — Espace relevés marchand",
@@ -8,6 +9,7 @@ app = FastAPI(
     description="Import des paiements, consultation et export des relevés marchand.",
 )
 app.include_router(router_auth)
+app.include_router(router_imports)
 
 
 @app.get("/sante")
