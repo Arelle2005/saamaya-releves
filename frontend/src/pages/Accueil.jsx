@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
 
 // Accueil provisoire : les écrans Import et Mes paiements arrivent aux prochaines étapes
@@ -28,9 +28,18 @@ export default function Accueil() {
             Se déconnecter
           </button>
         </header>
-        <p className="rounded-lg bg-white px-6 py-8 text-center text-sm text-slate-500 shadow-sm">
-          Les écrans Import et Mes paiements arrivent aux prochaines étapes.
-        </p>
+        {utilisateur.role === "ADMIN" ? (
+          <Link
+            to="/admin/import"
+            className="block rounded-lg bg-white px-6 py-5 text-sm font-medium text-navy shadow-sm transition duration-300 hover:shadow"
+          >
+            Importer les paiements (CSV)
+          </Link>
+        ) : (
+          <p className="rounded-lg bg-white px-6 py-8 text-center text-sm text-slate-500 shadow-sm">
+            L'écran Mes paiements arrive à la prochaine étape.
+          </p>
+        )}
       </div>
     </main>
   );

@@ -2,8 +2,9 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useAuth } from "./auth";
 import Login from "./pages/Login";
 import Accueil from "./pages/Accueil";
+import AdminImport from "./pages/AdminImport";
 
-function Protege({ children }) {
+function Protege({ children, role }) {
   const { utilisateur, chargement } = useAuth();
   if (chargement) {
     return (
@@ -13,6 +14,7 @@ function Protege({ children }) {
     );
   }
   if (!utilisateur) return <Navigate to="/login" replace />;
+  if (role && utilisateur.role !== role) return <Navigate to="/" replace />;
   return children;
 }
 
@@ -25,6 +27,14 @@ export default function App() {
         element={
           <Protege>
             <Accueil />
+          </Protege>
+        }
+      />
+      <Route
+        path="/admin/import"
+        element={
+          <Protege role="ADMIN">
+            <AdminImport />
           </Protege>
         }
       />
