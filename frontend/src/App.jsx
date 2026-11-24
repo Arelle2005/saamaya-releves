@@ -3,6 +3,7 @@ import { useAuth } from "./auth";
 import Login from "./pages/Login";
 import Accueil from "./pages/Accueil";
 import AdminImport from "./pages/AdminImport";
+import MarchandReleve from "./pages/MarchandReleve";
 
 function Protege({ children, role }) {
   const { utilisateur, chargement } = useAuth();
@@ -35,6 +36,14 @@ export default function App() {
         element={
           <Protege role="ADMIN">
             <AdminImport />
+          </Protege>
+        }
+      />
+      <Route
+        path="/marchand/releve"
+        element={
+          <Protege role="MARCHAND">
+            <MarchandReleve />
           </Protege>
         }
       />
