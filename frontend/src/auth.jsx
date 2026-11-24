@@ -13,7 +13,9 @@ export function AuthProvider({ children }) {
       .then(async (reponse) => {
         if (reponse.ok) setUtilisateur(await reponse.json());
       })
-      .catch(() => {})
+      .catch(() => {
+        // Échec silencieux au démarrage : l'utilisateur est simplement non connecté
+      })
       .finally(() => setChargement(false));
   }, []);
 
@@ -29,8 +31,15 @@ export function AuthProvider({ children }) {
   }
 
   async function deconnexion() {
-    await api("/auth/deconnexion", { method: "POST" }).catch(() => {});
-    setUtilisateur(null);
+    try {
+      // On tente de notifier le backend, mais on ne bloque pas si ça échoue
+      await api("/auth/deconnexion", { method: "POST" });
+    } catch (err) {
+      console.warn("Erreur lors de la déconnexion backend, nettoyage local anyway", err);
+    } finally {
+      // On vide l'état local dans tous les cas
+      setUtilisateur(null);
+    }
   }
 
   return (
