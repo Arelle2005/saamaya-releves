@@ -3,15 +3,18 @@
 import csv
 import io
 import re
+from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.deps import admin_requis, get_session
+from app.erreurs import ErreurReponse
 from app.frais import TRANCHES, calculer_frais_commission_net
 from app.models import Import, ImportLigne, Marchand, Paiement, Utilisateur
 
@@ -76,20 +79,29 @@ CHAMPS_COMPARES = ("date_heure", "code_marchand", "telephone_payeur", "montant",
 
 
 class RejetDetail(BaseModel):
-    numero_ligne: int
-    reference: str | None
-    motif_rejet: str
+    numero_ligne: int = Field(description="Numéro de la ligne dans le fichier (l'en-tête est la ligne 1).")
+    reference: str | None = Field(description="Référence de la ligne rejetée (tronquée à 50 caractères).")
+    motif_rejet: str = Field(description="Raison du rejet, en français.")
 
 
 class ImportReponse(BaseModel):
     id: int
-    date: datetime
-    auteur: str
+    date: datetime = Field(description="Date et heure de l'import (UTC).")
+    auteur: str = Field(description="Identifiant de l'administrateur qui a importé le fichier.")
     lignes_lues: int
-    lignes_importees: int
-    lignes_deja_presentes: int
+    lignes_importees: int = Field(description="Nouveaux paiements enregistrés.")
+    lignes_deja_presentes: int = Field(description="Références déjà en base avec exactement les mêmes données : ignorées.")
     lignes_rejetees: int
     rejets: list[RejetDetail]
+
+
+# Erreurs communes aux routes d'administration, documentées dans OpenAPI
+REPONSES_ADMIN = {
+    401: {"model": ErreurReponse, "description": "Non authentifié : jeton absent, invalide ou expiré."},
+    403: {"model": ErreurReponse, "description": "Accès refusé : route réservée au rôle ADMIN."},
+}
+
+ID_MAX_POSTGRESQL = 2_147_483_647  # plus grand entier de la colonne imports.id
 
 
 def _valider_ligne(champs: dict, marchands_connus: set) -> tuple[dict | None, str | None]:
@@ -171,12 +183,7 @@ def _paiements_existants(session: Session, references: set[str]) -> dict[str, tu
     return existants
 
 
-def _construire_reponse(session: Session, importation: Import, auteur: str) -> ImportReponse:
-    rejets = session.scalars(
-        select(ImportLigne)
-        .where(ImportLigne.import_id == importation.id)
-        .order_by(ImportLigne.numero_ligne)
-    ).all()
+def _reponse(importation: Import, auteur: str, rejets: list[ImportLigne]) -> ImportReponse:
     return ImportReponse(
         id=importation.id,
         date=importation.date,
@@ -194,9 +201,46 @@ def _construire_reponse(session: Session, importation: Import, auteur: str) -> I
     )
 
 
-@router.post("", response_model=ImportReponse)
-async def importer_csv(
-    fichier: UploadFile,
+def _construire_reponse(session: Session, importation: Import, auteur: str) -> ImportReponse:
+    rejets = session.scalars(
+        select(ImportLigne)
+        .where(ImportLigne.import_id == importation.id)
+        .order_by(ImportLigne.numero_ligne)
+    ).all()
+    return _reponse(importation, auteur, rejets)
+
+
+@router.post(
+    "",
+    response_model=ImportReponse,
+    summary="Importer le fichier CSV des paiements",
+    description=(
+        "Reçoit le fichier CSV des paiements de la veille (2 Mo maximum, extension `.csv`, UTF-8, "
+        "séparateur `,` ou `;`) avec l'en-tête "
+        "`reference,date_heure,code_marchand,telephone_payeur,montant,statut`.\n\n"
+        "Chaque ligne est contrôlée : une ligne invalide est rejetée avec son motif et n'empêche "
+        "pas l'import des autres. Une référence déjà présente avec les mêmes données est ignorée "
+        "(« déjà présente ») ; avec des données différentes, elle est rejetée. Un paiement déjà "
+        "enregistré n'est jamais modifié. Réimporter le même fichier ne change rien.\n\n"
+        "Frais réseau, commission et net sont calculés pour les paiements CONFIRME uniquement."
+    ),
+    responses={
+        400: {
+            "model": ErreurReponse,
+            "description": (
+                "Fichier refusé : absent, extension ou type non CSV, plus de 2 Mo, vide, contenu "
+                "binaire, encodage non UTF-8, CSV illisible ou colonnes manquantes."
+            ),
+        },
+        **REPONSES_ADMIN,
+    },
+)
+# Fonction ordinaire (pas async) : FastAPI l'exécute dans un thread. Un import long ne bloque
+# donc pas les autres requêtes, et le verrou PostgreSQL (plus bas) joue son rôle.
+def importer_csv(
+    fichier: Annotated[
+        UploadFile, File(description="Fichier CSV des paiements (2 Mo maximum).")
+    ],
     session: Session = Depends(get_session),
     admin: Utilisateur = Depends(admin_requis),
 ):
@@ -205,7 +249,7 @@ async def importer_csv(
     if fichier.content_type not in MIMES_ACCEPTES or not nom.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Type de fichier non accepté : CSV uniquement.")
     # Lecture bornée : on ne charge jamais plus de 2 Mo + 1 octet en mémoire
-    contenu = await fichier.read(TAILLE_MAX_OCTETS + 1)
+    contenu = fichier.file.read(TAILLE_MAX_OCTETS + 1)
     if len(contenu) > TAILLE_MAX_OCTETS:
         raise HTTPException(status_code=400, detail="Fichier trop volumineux : 2 Mo maximum.")
     if not contenu.strip():
@@ -310,7 +354,16 @@ async def importer_csv(
     return _construire_reponse(session, importation, admin.identifiant)
 
 
-@router.get("", response_model=list[ImportReponse])
+@router.get(
+    "",
+    response_model=list[ImportReponse],
+    summary="Historique des imports",
+    description=(
+        "Tous les imports, du plus récent au plus ancien, avec leurs compteurs et le motif de "
+        "chaque ligne rejetée."
+    ),
+    responses=REPONSES_ADMIN,
+)
 def historique_imports(
     session: Session = Depends(get_session),
     admin: Utilisateur = Depends(admin_requis),
@@ -318,8 +371,46 @@ def historique_imports(
     importations = session.scalars(
         select(Import).order_by(Import.date.desc(), Import.id.desc())
     ).all()
-    reponses = []
-    for importation in importations:
-        auteur = session.get(Utilisateur, importation.auteur)
-        reponses.append(_construire_reponse(session, importation, auteur.identifiant))
-    return reponses
+    if not importations:
+        return []
+    # Trois requêtes au total, quel que soit le nombre d'imports (et non deux par import)
+    auteurs = {
+        u.id: u.identifiant
+        for u in session.scalars(
+            select(Utilisateur).where(Utilisateur.id.in_({i.auteur for i in importations}))
+        )
+    }
+    rejets_par_import: dict[int, list[ImportLigne]] = defaultdict(list)
+    for rejet in session.scalars(
+        select(ImportLigne)
+        .where(ImportLigne.import_id.in_([i.id for i in importations]))
+        .order_by(ImportLigne.import_id, ImportLigne.numero_ligne)
+    ):
+        rejets_par_import[rejet.import_id].append(rejet)
+    return [_reponse(i, auteurs[i.auteur], rejets_par_import[i.id]) for i in importations]
+
+
+@router.get(
+    "/{import_id}",
+    response_model=ImportReponse,
+    summary="Détail d'un import",
+    description="Compteurs et lignes rejetées (avec leur motif) d'un import précis.",
+    responses={
+        404: {"model": ErreurReponse, "description": "Aucun import avec cet identifiant."},
+        **REPONSES_ADMIN,
+    },
+)
+def detail_import(
+    import_id: int,
+    session: Session = Depends(get_session),
+    admin: Utilisateur = Depends(admin_requis),
+):
+    # Hors de la plage de la colonne : cet import ne peut pas exister (et PostgreSQL
+    # répondrait par une erreur 500 « integer out of range »)
+    importation = (
+        session.get(Import, import_id) if 1 <= import_id <= ID_MAX_POSTGRESQL else None
+    )
+    if importation is None:
+        raise HTTPException(status_code=404, detail="Import introuvable.")
+    auteur = session.get(Utilisateur, importation.auteur)
+    return _construire_reponse(session, importation, auteur.identifiant)

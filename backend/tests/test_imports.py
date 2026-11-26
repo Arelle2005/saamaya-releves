@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from sqlalchemy import event, func, select
 
 from app.frais import TRANCHES
@@ -391,3 +392,108 @@ def test_reference_rejetee_a_longueur_limite_enregistree_en_historique(client, d
     importer(client, jeton_admin(client), contenu)
     ligne = db.scalar(select(ImportLigne))
     assert len(ligne.reference) == 50
+
+
+# ---------------------------------------------------------------------------
+# GET /imports/{id} : détail d'un import, avec un vrai 404
+# ---------------------------------------------------------------------------
+
+
+def entetes_admin(client):
+    return {"Authorization": f"Bearer {jeton_admin(client)}"}
+
+
+def test_detail_d_un_import_avec_ses_rejets(client):
+    cree = importer(client, jeton_admin(client), CSV_SUJET).json()
+    reponse = client.get(f"/imports/{cree['id']}", headers=entetes_admin(client))
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert corps["id"] == cree["id"]
+    assert corps["auteur"] == "admin"
+    assert (corps["lignes_lues"], corps["lignes_importees"]) == (14, 9)
+    assert [r["reference"] for r in corps["rejets"]] == ["GIM-0008", "GIM-0009", "GIM-0010", "GIM-0012"]
+    assert [r["numero_ligne"] for r in corps["rejets"]] == [10, 11, 12, 14]
+
+
+def test_detail_d_un_import_inconnu_donne_404_en_francais(client):
+    reponse = client.get("/imports/999", headers=entetes_admin(client))
+    assert reponse.status_code == 404
+    assert reponse.json() == {"detail": "Import introuvable."}
+
+
+@pytest.mark.parametrize("identifiant", ["0", "-1", "2147483648", "99999999999999999999"])
+def test_detail_d_un_identifiant_hors_plage_donne_404_sans_erreur_500(client, identifiant):
+    reponse = client.get(f"/imports/{identifiant}", headers=entetes_admin(client))
+    assert reponse.status_code == 404
+    assert reponse.json()["detail"] == "Import introuvable."
+
+
+def test_detail_d_un_identifiant_non_numerique_donne_400(client):
+    reponse = client.get("/imports/abc", headers=entetes_admin(client))
+    assert reponse.status_code == 400
+    assert reponse.json()["detail"] == "Le paramètre « import_id » doit être un nombre entier."
+
+
+def test_detail_d_un_import_reserve_a_l_admin(client):
+    cree = importer(client, jeton_admin(client), CSV_SUJET).json()
+    client.cookies.clear()  # le cookie de l'admin connecté ci-dessus rendrait la requête non anonyme
+    assert client.get(f"/imports/{cree['id']}").status_code == 401
+    marchand = {"Authorization": f"Bearer {jeton_marchand(client)}"}
+    assert client.get(f"/imports/{cree['id']}", headers=marchand).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Historique : nombre de requêtes constant, import sans bloquer le serveur
+# ---------------------------------------------------------------------------
+
+
+def _compter_requetes(engine, appel):
+    requetes = []
+
+    def ecouter(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            requetes.append(statement)
+
+    event.listen(engine, "before_cursor_execute", ecouter)
+    try:
+        reponse = appel()
+    finally:
+        event.remove(engine, "before_cursor_execute", ecouter)
+    return reponse, len(requetes)
+
+
+def test_historique_utilise_le_meme_nombre_de_requetes_quel_que_soit_le_nombre_d_imports(client, db):
+    from app.database import engine
+
+    jeton = jeton_admin(client)
+    entetes = {"Authorization": f"Bearer {jeton}"}
+    importer(client, jeton, CSV_SUJET)
+    importer(client, jeton, CSV_SUJET)
+    _, avec_2 = _compter_requetes(engine, lambda: client.get("/imports", headers=entetes))
+    for _ in range(6):
+        importer(client, jeton, CSV_SUJET)
+    reponse, avec_8 = _compter_requetes(engine, lambda: client.get("/imports", headers=entetes))
+    assert len(reponse.json()) == 8
+    assert avec_8 == avec_2  # 2 imports ou 8 : même nombre de requêtes
+
+
+def test_historique_vide(client):
+    reponse = client.get("/imports", headers=entetes_admin(client))
+    assert reponse.status_code == 200
+    assert reponse.json() == []
+
+
+def test_historique_garde_les_rejets_dans_l_ordre_des_lignes(client):
+    importer(client, jeton_admin(client), CSV_SUJET)
+    historique = client.get("/imports", headers=entetes_admin(client)).json()
+    assert [r["numero_ligne"] for r in historique[0]["rejets"]] == [10, 11, 12, 14]
+
+
+def test_l_import_ne_bloque_pas_la_boucle_d_evenements():
+    # Une fonction « async def » qui appelle la base de façon bloquante fige tout le serveur
+    # pendant l'import (mesuré : /sante attendait 2 s pendant un import de 25 000 lignes).
+    import inspect
+
+    from app.imports import importer_csv
+
+    assert not inspect.iscoroutinefunction(importer_csv)
