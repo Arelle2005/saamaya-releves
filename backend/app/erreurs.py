@@ -57,6 +57,12 @@ def _message_validation(erreur: dict) -> str:
         return f"{sujet} doit être inférieur ou égal à {ctx.get('le')}."
     if type_ == "string_type":
         return f"{sujet} doit être un texte."
+    if type_ == "string_too_short":
+        if ctx.get("min_length") == 1:
+            return f"{sujet} ne peut pas être vide."
+        return f"{sujet} doit contenir au moins {ctx.get('min_length')} caractères."
+    if type_ == "string_too_long":
+        return f"{sujet} doit contenir au plus {ctx.get('max_length')} caractères."
     return f"{sujet} est invalide."
 
 
