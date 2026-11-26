@@ -24,7 +24,7 @@ function AccesRefuse() {
 }
 
 function Protege({ children, role }) {
-  const { utilisateur, chargement } = useAuth();
+  const { utilisateur, chargement, sessionExpiree } = useAuth();
 
   if (chargement) {
     return (
@@ -35,7 +35,9 @@ function Protege({ children, role }) {
   }
 
   if (!utilisateur) {
-    return <Navigate to="/login?session_expired=true" replace />;
+    // Le message « session expirée » n'apparaît que si une session ouverte vient vraiment
+    // d'expirer. Première visite ou déconnexion volontaire : connexion sans message.
+    return <Navigate to={sessionExpiree ? "/login?session_expired=true" : "/login"} replace />;
   }
 
   if (role && utilisateur.role !== role) {
@@ -72,8 +74,9 @@ export default function App() {
         path="/admin/historique"
         element={
           <Protege role="ADMIN">
-            <AdminImport /> 
-            {/* Note: Pour l'instant, on réutilise AdminImport qui contient déjà l'historique. Nous le séparerons à l'étape 4 si besoin. */}
+            {/* Même composant que /admin/import : il lit l'adresse (/historique) pour
+                afficher la vue « Historique des imports » au lieu de la vue d'import. */}
+            <AdminImport />
           </Protege>
         }
       />

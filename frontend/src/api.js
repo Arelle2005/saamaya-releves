@@ -1,5 +1,18 @@
 const BASE = "/api";
 
+// auth.jsx s'inscrit ici pour être prévenu quand la session se termine (401).
+// api.js ne connaît pas React : il appelle simplement la fonction inscrite.
+let surSessionExpiree = null;
+
+export function definirGestionnaireSessionExpiree(gestionnaire) {
+  surSessionExpiree = gestionnaire;
+}
+
+// Pour ces routes, un 401 est normal et ne veut PAS dire « session expirée » :
+// - /auth/connexion : mauvais mot de passe
+// - /auth/moi : vérification au démarrage, personne n'est encore connecté
+const ROUTES_SANS_EXPIRATION = ["/auth/connexion", "/auth/moi"];
+
 // Point de passage unique : cookie httpOnly envoyé automatiquement (credentials)
 export async function api(chemin, options = {}) {
   const estFormulaire = options.body instanceof FormData;
@@ -10,13 +23,15 @@ export async function api(chemin, options = {}) {
       ? options.headers
       : { "Content-Type": "application/json", ...options.headers },
   });
-  // Session expirée ou absente : retour à la connexion (sauf sur la page de login)
+  // Un 401 sur une route protégée : le jeton a expiré (ou n'est plus valide).
+  // On prévient l'authentification, qui ferme la session et renvoie vers la connexion
+  // sans recharger la page.
   if (
     reponse.status === 401 &&
-    chemin !== "/auth/connexion" &&
-    window.location.pathname !== "/login"
+    !ROUTES_SANS_EXPIRATION.some((route) => chemin.startsWith(route)) &&
+    surSessionExpiree
   ) {
-    window.location.assign("/login");
+    surSessionExpiree();
   }
   return reponse;
 }
