@@ -1,4 +1,4 @@
-# Secrets et environnement local
+# Secrets et environnement local (jamais commités)
 .env
 
 # Python
@@ -6,9 +6,12 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
 # Frontend
 node_modules/
 dist/
-.run-backend.ps1
-.run-frontend.ps1
+
+# Scripts générés par start-dev.ps1 (ils contiennent un chemin personnel)
+run-backend.ps1
+run-frontend.ps1
