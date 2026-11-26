@@ -24,8 +24,22 @@ class Utilisateur(Base):
     role: Mapped[str] = mapped_column(String(10))
     code_marchand: Mapped[str | None] = mapped_column(ForeignKey("marchands.code"))
     mot_de_passe_hache: Mapped[str] = mapped_column(String(100))
-    tentatives_echouees: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class TentativeConnexion(Base):
+    """Échecs de connexion par identifiant, y compris pour les identifiants inconnus.
+
+    Une ligne par identifiant essayé : un compte qui n'existe pas se bloque exactement
+    comme un compte réel, donc on ne peut pas deviner quels comptes existent.
+    """
+
+    __tablename__ = "tentatives_connexion"
+    __table_args__ = (Index("ix_tentatives_derniere", "derniere_tentative"),)
+
+    identifiant: Mapped[str] = mapped_column(String(50), primary_key=True)
+    echecs: Mapped[int] = mapped_column(Integer)
     bloque_jusqua: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    derniere_tentative: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class Paiement(Base):
