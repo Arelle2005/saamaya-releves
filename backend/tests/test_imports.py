@@ -1,6 +1,9 @@
-from sqlalchemy import func, select
+from concurrent.futures import ThreadPoolExecutor
 
-from app.models import Paiement
+from sqlalchemy import event, func, select
+
+from app.frais import TRANCHES
+from app.models import ImportLigne, Paiement
 
 ENTETE = "reference,date_heure,code_marchand,telephone_payeur,montant,statut"
 
@@ -24,6 +27,25 @@ GIM-0002,2026-11-22T09:00:00,000101,699000002,250000,CONFIRME
 """
 
 
+# Le fichier EXACT de la section 3 du sujet
+CSV_SUJET = ENTETE + """
+GIM-0001,2026-11-02T09:14:00,000101,699000001,10000,CONFIRME
+GIM-0002,2026-11-02T10:02:00,000101,677000002,250000,CONFIRME
+GIM-0003,2026-11-03T11:45:00,000102,655000003,300000,CONFIRME
+GIM-0004,2026-11-03T12:30:00,000102,699000004,1234567,CONFIRME
+GIM-0005,2026-11-04T08:05:00,000101,677000005,6000000,CONFIRME
+GIM-0006,2026-11-04T15:20:00,000101,655000006,4500,EN_ATTENTE
+GIM-0007,2026-11-05T16:00:00,000102,699000007,15000,REFUSE
+GIM-0002,2026-11-02T10:02:00,000101,677000002,250000,CONFIRME
+GIM-0008,2026-11-05T17:10:00,000101,677000008,300,CONFIRME
+GIM-0009,2026-11-06T09:00:00,000999,655000009,20000,CONFIRME
+GIM-0010,2026-11-06T09:30:00,000102,699000010,-5000,CONFIRME
+GIM-0011,2026-11-07T13:00:00,000102,677000011,75000,CONFIRME
+GIM-0012,2026-11-08T18:45:00,000101,655000012,1 000,CONFIRME
+GIM-0013,2026-11-09T07:55:00,000102,699000013,500,CONFIRME
+"""
+
+
 def jeton_admin(client):
     reponse = client.post(
         "/auth/connexion", json={"identifiant": "admin", "mot_de_passe": "admin-test"}
@@ -38,12 +60,12 @@ def jeton_marchand(client):
     return reponse.json()["jeton"]
 
 
-def importer(client, jeton, contenu, mime="text/csv"):
+def importer(client, jeton, contenu, mime="text/csv", nom="paiements.csv"):
     if isinstance(contenu, str):
         contenu = contenu.encode("utf-8")
     return client.post(
         "/imports",
-        files={"fichier": ("paiements.csv", contenu, mime)},
+        files={"fichier": (nom, contenu, mime)},
         headers={"Authorization": f"Bearer {jeton}"},
     )
 
@@ -159,3 +181,213 @@ def test_historique_imports(client):
     assert historique[0]["lignes_importees"] == 0
     assert historique[1]["lignes_importees"] == 9
     assert len(historique[1]["rejets"]) == 4
+
+
+# ---------------------------------------------------------------------------
+# Fichier exact du sujet
+# ---------------------------------------------------------------------------
+
+
+def test_fichier_exact_du_sujet(client, db):
+    corps = importer(client, jeton_admin(client), CSV_SUJET).json()
+    assert (corps["lignes_lues"], corps["lignes_importees"]) == (14, 9)
+    assert (corps["lignes_deja_presentes"], corps["lignes_rejetees"]) == (1, 4)
+    rejets = {(r["numero_ligne"], r["reference"]): r["motif_rejet"] for r in corps["rejets"]}
+    assert rejets == {
+        (10, "GIM-0008"): "montant hors tranche (500 à 100 000 000 FCFA)",
+        (11, "GIM-0009"): "marchand inconnu",
+        (12, "GIM-0010"): "montant invalide : uniquement des chiffres attendus",
+        (14, "GIM-0012"): "montant invalide : uniquement des chiffres attendus",
+    }
+    assert db.scalar(select(func.count()).select_from(Paiement)) == 9
+
+
+# ---------------------------------------------------------------------------
+# Lignes mal formées : un rejet, jamais une erreur 500
+# ---------------------------------------------------------------------------
+
+
+def test_reference_trop_longue_rejetee_sans_bloquer_le_fichier(client, db):
+    longue = "R" * 60
+    contenu = (
+        ENTETE
+        + f"\n{longue},2026-11-22T08:00:00,000101,699000001,10000,CONFIRME"
+        + "\nGIM-0300,2026-11-22T08:00:00,000101,699000001,10000,CONFIRME\n"
+    )
+    reponse = importer(client, jeton_admin(client), contenu)
+    assert reponse.status_code == 200
+    corps = reponse.json()
+    assert corps["lignes_importees"] == 1
+    assert corps["lignes_rejetees"] == 1
+    assert "référence invalide" in corps["rejets"][0]["motif_rejet"]
+    # La référence rejetée est tronquée à 50 caractères pour tenir dans la colonne
+    assert len(corps["rejets"][0]["reference"]) == 50
+    assert db.scalar(select(func.count()).select_from(Paiement)) == 1
+
+
+def test_reference_avec_espace_ou_caractere_de_controle(client):
+    contenu = (
+        ENTETE
+        + "\nGIM 0301,2026-11-22T08:00:00,000101,699000001,10000,CONFIRME"
+        + "\nGIM\x070302,2026-11-22T08:00:00,000101,699000001,10000,CONFIRME\n"
+    )
+    corps = importer(client, jeton_admin(client), contenu).json()
+    assert corps["lignes_rejetees"] == 2
+    assert all("référence invalide" in r["motif_rejet"] for r in corps["rejets"])
+
+
+def test_ligne_avec_colonne_en_trop(client, db):
+    contenu = ENTETE + "\nGIM-0310,2026-11-22T08:00:00,000101,699000001,10000,CONFIRME,extra\n"
+    corps = importer(client, jeton_admin(client), contenu).json()
+    assert corps["lignes_importees"] == 0
+    assert corps["rejets"][0]["motif_rejet"] == "nombre de colonnes incorrect (6 valeurs attendues)"
+    assert db.scalar(select(func.count()).select_from(Paiement)) == 0
+
+
+def test_ligne_avec_colonne_manquante(client):
+    contenu = ENTETE + "\nGIM-0311,2026-11-22T08:00:00,000101,699000001,10000\n"
+    corps = importer(client, jeton_admin(client), contenu).json()
+    assert corps["lignes_rejetees"] == 1
+    assert corps["rejets"][0]["motif_rejet"] == "nombre de colonnes incorrect (6 valeurs attendues)"
+
+
+def test_date_sans_heure_ou_impossible_rejetee(client):
+    contenu = (
+        ENTETE
+        + "\nGIM-0320,2026-11-22,000101,699000001,10000,CONFIRME"
+        + "\nGIM-0321,2026-13-45T09:14:00,000101,699000001,10000,CONFIRME"
+        + "\nGIM-0322,22/11/2026 09:14,000101,699000001,10000,CONFIRME\n"
+    )
+    corps = importer(client, jeton_admin(client), contenu).json()
+    assert corps["lignes_importees"] == 0
+    assert corps["lignes_rejetees"] == 3
+    assert all(r["motif_rejet"].startswith("date invalide") for r in corps["rejets"])
+
+
+def test_montant_gigantesque_rejete_sans_erreur(client):
+    contenu = ENTETE + "\nGIM-0330,2026-11-22T08:00:00,000101,699000001," + "9" * 5000 + ",CONFIRME\n"
+    reponse = importer(client, jeton_admin(client), contenu)
+    assert reponse.status_code == 200
+    assert reponse.json()["rejets"][0]["motif_rejet"].startswith("montant hors tranche")
+
+
+def test_doublon_dans_le_meme_fichier_avec_donnees_differentes(client, db):
+    contenu = (
+        ENTETE
+        + "\nGIM-0340,2026-11-22T08:00:00,000101,699000001,10000,CONFIRME"
+        + "\nGIM-0340,2026-11-22T08:00:00,000101,699000001,20000,CONFIRME\n"
+    )
+    corps = importer(client, jeton_admin(client), contenu).json()
+    assert corps["lignes_importees"] == 1
+    assert corps["lignes_rejetees"] == 1
+    assert corps["rejets"][0]["motif_rejet"] == "référence déjà présente avec des données différentes"
+    assert db.scalar(select(Paiement.montant).where(Paiement.reference == "GIM-0340")) == 10_000
+
+
+def test_separateur_point_virgule(client):
+    contenu = (
+        ENTETE.replace(",", ";")
+        + "\nGIM-0350;2026-11-22T08:00:00;000101;699000001;10000;CONFIRME\n"
+    )
+    assert importer(client, jeton_admin(client), contenu).json()["lignes_importees"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Bornes du montant : elles viennent des tranches
+# ---------------------------------------------------------------------------
+
+
+def test_bornes_du_montant_viennent_des_tranches(client, db):
+    minimum, maximum = TRANCHES[0][0], TRANCHES[-1][1]
+    contenu = (
+        ENTETE
+        + f"\nGIM-0360,2026-11-22T08:00:00,000101,699000001,{minimum - 1},CONFIRME"
+        + f"\nGIM-0361,2026-11-22T08:00:00,000101,699000001,{minimum},CONFIRME"
+        + f"\nGIM-0362,2026-11-22T08:00:00,000101,699000001,{maximum},CONFIRME"
+        + f"\nGIM-0363,2026-11-22T08:00:00,000101,699000001,{maximum + 1},CONFIRME\n"
+    )
+    corps = importer(client, jeton_admin(client), contenu).json()
+    assert corps["lignes_importees"] == 2
+    assert {r["reference"] for r in corps["rejets"]} == {"GIM-0360", "GIM-0363"}
+
+
+# ---------------------------------------------------------------------------
+# Contrôle du fichier : type, extension, contenu, lisibilité
+# ---------------------------------------------------------------------------
+
+
+def test_extension_non_csv_refusee_meme_avec_mime_csv(client):
+    reponse = importer(client, jeton_admin(client), CSV_14_LIGNES, mime="text/csv", nom="notes.txt")
+    assert reponse.status_code == 400
+    assert "CSV" in reponse.json()["detail"]
+
+
+def test_contenu_binaire_refuse(client):
+    binaire = b"reference,montant\x00\x01\x02\n"
+    reponse = importer(client, jeton_admin(client), binaire)
+    assert reponse.status_code == 400
+    assert "Contenu non valide" in reponse.json()["detail"]
+
+
+def test_csv_illisible_donne_400(client):
+    # Un champ de 200 000 caractères dépasse la limite du module csv (131 072)
+    contenu = ENTETE + "\n" + "A" * 200_000 + ",2026-11-22T08:00:00,000101,699000001,10000,CONFIRME\n"
+    reponse = importer(client, jeton_admin(client), contenu)
+    assert reponse.status_code == 400
+    assert "illisible" in reponse.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Robustesse : requêtes SQL et imports simultanés
+# ---------------------------------------------------------------------------
+
+
+def test_une_seule_lecture_des_paiements_pour_tout_le_fichier(client, db):
+    from app.database import engine
+
+    lignes = "".join(
+        f"\nGIM-{i:05d},2026-11-22T08:00:00,000101,699000001,10000,CONFIRME" for i in range(300)
+    )
+    requetes = []
+
+    def compter(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT") and "FROM paiements" in statement:
+            requetes.append(statement)
+
+    jeton = jeton_admin(client)
+    event.listen(engine, "before_cursor_execute", compter)
+    try:
+        corps = importer(client, jeton, ENTETE + lignes + "\n").json()
+    finally:
+        event.remove(engine, "before_cursor_execute", compter)
+
+    assert corps["lignes_importees"] == 300
+    # 300 lignes, mais une seule requête de lecture sur paiements (et non 300)
+    assert len(requetes) == 1
+
+
+def test_deux_imports_simultanes_ne_plantent_pas(client, db):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    jeton = jeton_admin(client)
+
+    def lancer():
+        return importer(TestClient(app), jeton, CSV_SUJET)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reponses = [f.result() for f in [pool.submit(lancer), pool.submit(lancer)]]
+
+    assert [r.status_code for r in reponses] == [200, 200]
+    totaux = sorted(r.json()["lignes_importees"] for r in reponses)
+    # L'un importe les 9 paiements, l'autre les trouve tous déjà présents
+    assert totaux == [0, 9]
+    assert db.scalar(select(func.count()).select_from(Paiement)) == 9
+
+
+def test_reference_rejetee_a_longueur_limite_enregistree_en_historique(client, db):
+    contenu = ENTETE + "\n" + "Z" * 80 + ",2026-11-22T08:00:00,000101,699000001,10000,CONFIRME\n"
+    importer(client, jeton_admin(client), contenu)
+    ligne = db.scalar(select(ImportLigne))
+    assert len(ligne.reference) == 50
