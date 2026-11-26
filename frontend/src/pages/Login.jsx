@@ -2,6 +2,22 @@ import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
 
+const MESSAGE_INJOIGNABLE =
+  "Serveur injoignable. Vérifiez votre connexion internet puis réessayez.";
+const MESSAGE_INDISPONIBLE = "Le service est momentanément indisponible. Réessayez dans un instant.";
+const MESSAGE_GENERIQUE = "Connexion impossible. Veuillez réessayer.";
+
+// Choisit le message à afficher selon la vraie cause de l'échec.
+// - TypeError : le navigateur n'a pas pu joindre le serveur (serveur éteint, réseau coupé)
+// - status >= 500 : le serveur a répondu mais il est en panne
+// - sinon : message français renvoyé par l'API (« Identifiant ou mot de passe incorrect. »,
+//   « Compte bloqué ... Réessayez dans 15 minute(s). », erreur de validation...)
+function messageErreurConnexion(err) {
+  if (err instanceof TypeError) return MESSAGE_INJOIGNABLE;
+  if (typeof err?.status === "number" && err.status >= 500) return MESSAGE_INDISPONIBLE;
+  return err?.message || MESSAGE_GENERIQUE;
+}
+
 export default function Login() {
   const { connexion } = useAuth();
   const navigate = useNavigate();
@@ -19,10 +35,11 @@ export default function Login() {
     setErreur("");
     setChargement(true);
     try {
-      await connexion(identifiant, motDePasse);
+      // trim : un espace copié avec l'identifiant ne doit pas faire échouer la connexion
+      await connexion(identifiant.trim(), motDePasse);
       navigate("/", { replace: true });
-    } catch {
-      setErreur("Identifiant ou mot de passe incorrect.");
+    } catch (err) {
+      setErreur(messageErreurConnexion(err));
     } finally {
       setChargement(false);
     }
@@ -124,7 +141,7 @@ export default function Login() {
             )}
 
             {erreur && (
-              <div className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {erreur}
               </div>
             )}
