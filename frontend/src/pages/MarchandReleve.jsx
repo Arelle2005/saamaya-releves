@@ -2,46 +2,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, detailErreur } from "../api";
 import { useAuth } from "../auth";
+import { dateCourte, francs, nombre, periodeDepuis } from "../format";
+import StatutBadge from "../StatutBadge";
 
 const STATUTS = ["CONFIRME", "EN_ATTENTE", "REFUSE"];
-const BADGES = {
-  CONFIRME: "bg-emerald-100 text-emerald-800",
-  EN_ATTENTE: "bg-amber-100 text-amber-800",
-  REFUSE: "bg-red-100 text-red-800",
-};
 
 // Le numéro de téléphone arrive DÉJÀ masqué par le serveur (6XX XX X0 01).
 // L'écran l'affiche tel quel : le masquage a un seul endroit, le backend.
-
-// 1 234 567 : séparateur de milliers français. null (paiement non confirmé) -> « — ».
-function nombre(valeur) {
-  return valeur == null ? "—" : new Intl.NumberFormat("fr-FR").format(valeur);
-}
-
-function francs(valeur) {
-  return valeur == null ? "—" : nombre(valeur) + " FCFA";
-}
-
-function dateCourte(valeur) {
-  return new Date(valeur).toLocaleString("fr-FR", {
-    timeZone: "Africa/Douala", dateStyle: "short", timeStyle: "short",
-  });
-}
-
-// Date AAAA-MM-JJ d'il y a N jours, calculée en heure du Cameroun (et non en UTC :
-// toISOString() donnerait la veille entre minuit et 1 h du matin).
-function isoIlYA(jours) {
-  const d = new Date(Date.now() - jours * 86_400_000);
-  return d.toLocaleDateString("sv-SE", { timeZone: "Africa/Douala" });
-}
-
-function Badge({ statut }) {
-  return (
-    <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${BADGES[statut]}`}>
-      {statut}
-    </span>
-  );
-}
 
 // Un paiement sous forme de carte : affichage téléphone (moins de 768 px de large)
 function CartePaiement({ p }) {
@@ -52,7 +19,7 @@ function CartePaiement({ p }) {
           <p className="truncate font-semibold text-slate-900">{p.reference}</p>
           <p className="mt-0.5 text-xs text-slate-500">{dateCourte(p.date_heure)}</p>
         </div>
-        <Badge statut={p.statut} />
+        <StatutBadge statut={p.statut} />
       </div>
       <p className="mt-3 text-xl font-bold text-slate-900">{francs(p.montant)}</p>
       <p className="mt-1 font-mono text-xs text-slate-500">{p.telephone_payeur}</p>
@@ -76,8 +43,8 @@ function CartePaiement({ p }) {
 
 export default function MarchandReleve() {
   const { utilisateur } = useAuth();
-  const [du, setDu] = useState(isoIlYA(29));
-  const [au, setAu] = useState(isoIlYA(0));
+  const [du, setDu] = useState(() => periodeDepuis(30).du);
+  const [au, setAu] = useState(() => periodeDepuis(30).au);
   const [statut, setStatut] = useState("");
   const [page, setPage] = useState(1);
   const [donnees, setDonnees] = useState(null);
@@ -241,7 +208,7 @@ export default function MarchandReleve() {
                         <td className="whitespace-nowrap px-6 py-4 text-slate-600">{francs(p.frais_reseau)}</td>
                         <td className="whitespace-nowrap px-6 py-4 text-slate-600">{francs(p.commission)}</td>
                         <td className="whitespace-nowrap px-6 py-4 font-bold text-slate-900">{francs(p.net)}</td>
-                        <td className="px-6 py-4"><Badge statut={p.statut} /></td>
+                        <td className="px-6 py-4"><StatutBadge statut={p.statut} /></td>
                       </tr>
                     ))}
                   </tbody>
