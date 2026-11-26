@@ -8,11 +8,12 @@ from datetime import datetime, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.audit import ECHEC, IMPORT, SUCCES, adresse_ip, enregistrer
 from app.deps import admin_requis, get_session
 from app.erreurs import ErreurReponse
 from app.frais import TRANCHES, calculer_frais_commission_net
@@ -210,40 +211,11 @@ def _construire_reponse(session: Session, importation: Import, auteur: str) -> I
     return _reponse(importation, auteur, rejets)
 
 
-@router.post(
-    "",
-    response_model=ImportReponse,
-    summary="Importer le fichier CSV des paiements",
-    description=(
-        "Reçoit le fichier CSV des paiements de la veille (2 Mo maximum, extension `.csv`, UTF-8, "
-        "séparateur `,` ou `;`) avec l'en-tête "
-        "`reference,date_heure,code_marchand,telephone_payeur,montant,statut`.\n\n"
-        "Chaque ligne est contrôlée : une ligne invalide est rejetée avec son motif et n'empêche "
-        "pas l'import des autres. Une référence déjà présente avec les mêmes données est ignorée "
-        "(« déjà présente ») ; avec des données différentes, elle est rejetée. Un paiement déjà "
-        "enregistré n'est jamais modifié. Réimporter le même fichier ne change rien.\n\n"
-        "Frais réseau, commission et net sont calculés pour les paiements CONFIRME uniquement."
-    ),
-    responses={
-        400: {
-            "model": ErreurReponse,
-            "description": (
-                "Fichier refusé : absent, extension ou type non CSV, plus de 2 Mo, vide, contenu "
-                "binaire, encodage non UTF-8, CSV illisible ou colonnes manquantes."
-            ),
-        },
-        **REPONSES_ADMIN,
-    },
-)
-# Fonction ordinaire (pas async) : FastAPI l'exécute dans un thread. Un import long ne bloque
-# donc pas les autres requêtes, et le verrou PostgreSQL (plus bas) joue son rôle.
-def importer_csv(
-    fichier: Annotated[
-        UploadFile, File(description="Fichier CSV des paiements (2 Mo maximum).")
-    ],
-    session: Session = Depends(get_session),
-    admin: Utilisateur = Depends(admin_requis),
-):
+def _lire_csv(fichier: UploadFile) -> list[tuple[int, dict]]:
+    """Contrôle le fichier envoyé et renvoie ses lignes (numéro, valeurs).
+
+    Toute anomalie du fichier lui-même (type, taille, encodage, colonnes) lève une erreur 400.
+    """
     # Deux contrôles : le type déclaré par le client ET l'extension du nom de fichier
     nom = (fichier.filename or "").lower()
     if fichier.content_type not in MIMES_ACCEPTES or not nom.endswith(".csv"):
@@ -282,6 +254,50 @@ def importer_csv(
         raise HTTPException(
             status_code=400, detail=f"Colonnes manquantes : {', '.join(manquantes)}."
         )
+    return lignes
+
+
+@router.post(
+    "",
+    response_model=ImportReponse,
+    summary="Importer le fichier CSV des paiements",
+    description=(
+        "Reçoit le fichier CSV des paiements de la veille (2 Mo maximum, extension `.csv`, UTF-8, "
+        "séparateur `,` ou `;`) avec l'en-tête "
+        "`reference,date_heure,code_marchand,telephone_payeur,montant,statut`.\n\n"
+        "Chaque ligne est contrôlée : une ligne invalide est rejetée avec son motif et n'empêche "
+        "pas l'import des autres. Une référence déjà présente avec les mêmes données est ignorée "
+        "(« déjà présente ») ; avec des données différentes, elle est rejetée. Un paiement déjà "
+        "enregistré n'est jamais modifié. Réimporter le même fichier ne change rien.\n\n"
+        "Frais réseau, commission et net sont calculés pour les paiements CONFIRME uniquement."
+    ),
+    responses={
+        400: {
+            "model": ErreurReponse,
+            "description": (
+                "Fichier refusé : absent, extension ou type non CSV, plus de 2 Mo, vide, contenu "
+                "binaire, encodage non UTF-8, CSV illisible ou colonnes manquantes."
+            ),
+        },
+        **REPONSES_ADMIN,
+    },
+)
+# Fonction ordinaire (pas async) : FastAPI l'exécute dans un thread. Un import long ne bloque
+# donc pas les autres requêtes, et le verrou PostgreSQL (plus bas) joue son rôle.
+def importer_csv(
+    fichier: Annotated[
+        UploadFile, File(description="Fichier CSV des paiements (2 Mo maximum).")
+    ],
+    request: Request,
+    session: Session = Depends(get_session),
+    admin: Utilisateur = Depends(admin_requis),
+):
+    try:
+        lignes = _lire_csv(fichier)
+    except HTTPException as erreur:
+        # Un fichier refusé est consigné dans le journal d'audit, avec le motif
+        enregistrer(session, IMPORT, admin.identifiant, ECHEC, adresse_ip(request), erreur.detail)
+        raise
 
     # Verrou : un seul import à la fois. Deux imports simultanés du même fichier
     # s'exécutent l'un après l'autre, le second voit les paiements du premier et les
@@ -351,6 +367,12 @@ def importer_csv(
     # Une seule transaction : paiements valides + rapport commités ensemble,
     # les rejets sont un flux normal, pas des exceptions
     session.commit()
+    enregistrer(
+        session, IMPORT, admin.identifiant, SUCCES, adresse_ip(request),
+        f"import n°{importation.id} : {importation.lignes_lues} lue(s), "
+        f"{importation.lignes_importees} importée(s), {importation.lignes_deja_presentes} déjà présente(s), "
+        f"{importation.lignes_rejetees} rejetée(s)",
+    )
     return _construire_reponse(session, importation, admin.identifiant)
 
 

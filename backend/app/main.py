@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.audit import router as router_audit
 from app.auth import router as router_auth
 from app.erreurs import installer_gestionnaires
 from app.imports import router as router_imports
@@ -29,6 +30,7 @@ TAGS = [
     {"name": "authentification", "description": "Connexion, déconnexion et profil."},
     {"name": "imports", "description": "Import du fichier CSV des paiements (rôle ADMIN)."},
     {"name": "relevés", "description": "Paiements, totaux et export du marchand connecté (rôle MARCHAND)."},
+    {"name": "audit", "description": "Journal d'audit des connexions et des imports (rôle ADMIN)."},
     {"name": "supervision", "description": "Vérification de l'état du service."},
 ]
 
@@ -42,6 +44,7 @@ installer_gestionnaires(app)
 app.include_router(router_auth)
 app.include_router(router_imports)
 app.include_router(router_releves)
+app.include_router(router_audit)
 
 
 @app.get(

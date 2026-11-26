@@ -26,6 +26,7 @@ def test_toutes_les_routes_attendues_sont_documentees(operations):
         "POST /imports",
         "GET /imports",
         "GET /imports/{import_id}",
+        "GET /audit",
         "GET /paiements",
         "GET /releve",
         "GET /releve/export",
@@ -40,7 +41,7 @@ def test_chaque_route_a_un_resume_et_une_description(operations):
 
 def test_chaque_route_protegee_declare_l_erreur_401(operations):
     protegees = [(nom, op) for nom, op in operations if op.get("security")]
-    assert len(protegees) >= 7
+    assert len(protegees) >= 8
     for nom, operation in protegees:
         assert "401" in operation["responses"], nom
         assert operation["responses"]["401"]["description"], nom
@@ -48,14 +49,14 @@ def test_chaque_route_protegee_declare_l_erreur_401(operations):
 
 def test_les_routes_reservees_a_un_role_declarent_l_erreur_403(operations):
     par_nom = dict(operations)
-    for nom in ["POST /imports", "GET /imports", "GET /imports/{import_id}",
+    for nom in ["POST /imports", "GET /imports", "GET /imports/{import_id}", "GET /audit",
                 "GET /paiements", "GET /releve", "GET /releve/export", "POST /auth/connexion"]:
         assert "403" in par_nom[nom]["responses"], nom
 
 
 def test_les_routes_a_parametres_declarent_l_erreur_400(operations):
     par_nom = dict(operations)
-    for nom in ["POST /imports", "GET /paiements", "GET /releve", "GET /releve/export", "POST /auth/connexion"]:
+    for nom in ["POST /imports", "GET /audit", "GET /paiements", "GET /releve", "GET /releve/export", "POST /auth/connexion"]:
         assert "400" in par_nom[nom]["responses"], nom
 
 

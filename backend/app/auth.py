@@ -1,10 +1,11 @@
 """Connexion : JWT de 15 minutes, blocage 15 minutes après 5 échecs."""
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.audit import BLOQUE, CONNEXION, ECHEC, SUCCES, adresse_ip, enregistrer
 from app.config import COOKIE_SECURE
 from app.deps import get_session, utilisateur_courant
 from app.erreurs import ErreurReponse
@@ -70,15 +71,21 @@ def _erreur_blocage(detail: str, secondes: int) -> HTTPException:
 )
 def connexion(
     demande: ConnexionDemande,
+    request: Request,
     response: Response,
     session: Session = Depends(get_session),
 ):
+    ip = adresse_ip(request)
     # 1. On compte la tentative AVANT toute vérification (atomique, voir tentatives.py).
     etat = compter_tentative(session, demande.identifiant)
 
     # 2. Série déjà bloquée : refus immédiat, sans vérifier le mot de passe.
     if not etat.verification_autorisee:
         minutes = minutes_restantes(etat.bloque_jusqua)
+        enregistrer(
+            session, CONNEXION, demande.identifiant, BLOQUE, ip,
+            f"tentative n°{etat.echecs} pendant le blocage (encore {minutes} minute(s))",
+        )
         raise _erreur_blocage(
             f"Compte bloqué suite à trop de tentatives. Réessayez dans {minutes} minute(s).",
             secondes_restantes(etat.bloque_jusqua),
@@ -93,16 +100,27 @@ def connexion(
     mot_de_passe_valide = verifier_mot_de_passe(demande.mot_de_passe, hache)
 
     if utilisateur is None or not mot_de_passe_valide:
-        # Même réponse pour identifiant inconnu et mot de passe faux
+        # Même réponse pour identifiant inconnu et mot de passe faux.
+        # Le journal (réservé à l'administrateur) garde la vraie cause, mais jamais le mot de passe.
+        cause = "identifiant inconnu" if utilisateur is None else "mot de passe incorrect"
         if etat.derniere_autorisee:
             minutes = int(DUREE_BLOCAGE.total_seconds() // 60)
+            enregistrer(
+                session, CONNEXION, demande.identifiant, ECHEC, ip,
+                f"{cause} ; blocage de {minutes} minutes déclenché après {MAX_TENTATIVES} échecs",
+            )
             raise _erreur_blocage(
                 f"Compte bloqué pendant {minutes} minutes après {MAX_TENTATIVES} échecs de connexion.",
                 secondes_restantes(etat.bloque_jusqua),
             )
+        enregistrer(
+            session, CONNEXION, demande.identifiant, ECHEC, ip,
+            f"{cause} (échec {etat.echecs} sur {MAX_TENTATIVES})",
+        )
         raise HTTPException(status_code=401, detail=MESSAGE_IDENTIFIANTS_INCORRECTS)
 
     effacer(session, demande.identifiant)
+    enregistrer(session, CONNEXION, utilisateur.identifiant, SUCCES, ip)
     jeton = creer_jeton(utilisateur)
     # httpOnly : illisible en JavaScript. secure : variable COOKIE_SECURE (true en HTTPS).
     response.set_cookie(

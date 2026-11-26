@@ -85,3 +85,22 @@ class ImportLigne(Base):
     numero_ligne: Mapped[int] = mapped_column(Integer)
     reference: Mapped[str | None] = mapped_column(String(50))
     motif_rejet: Mapped[str | None] = mapped_column(String(200))
+
+
+class JournalAudit(Base):
+    """Journal d'audit : une ligne par connexion (réussie, échouée, bloquée) et par import.
+
+    Aucun mot de passe n'y est jamais écrit. L'identifiant est celui qui a été saisi,
+    tronqué à 50 caractères.
+    """
+
+    __tablename__ = "journal_audit"
+    __table_args__ = (Index("ix_journal_audit_date", "date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    type: Mapped[str] = mapped_column(String(20))  # CONNEXION ou IMPORT
+    identifiant: Mapped[str | None] = mapped_column(String(50))
+    ip: Mapped[str | None] = mapped_column(String(45))  # 45 caractères = taille d'une adresse IPv6
+    resultat: Mapped[str] = mapped_column(String(10))  # SUCCES, ECHEC ou BLOQUE
+    details: Mapped[str | None] = mapped_column(String(200))

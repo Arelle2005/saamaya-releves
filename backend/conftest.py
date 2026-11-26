@@ -44,7 +44,7 @@ def db(_schema):
     with engine.begin() as connexion:
         connexion.execute(
             text(
-                "TRUNCATE import_lignes, imports, paiements, tentatives_connexion, "
+                "TRUNCATE import_lignes, imports, paiements, tentatives_connexion, journal_audit, "
                 "utilisateurs, marchands RESTART IDENTITY CASCADE"
             )
         )
