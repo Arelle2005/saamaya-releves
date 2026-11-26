@@ -125,12 +125,35 @@ def test_du_apres_au(client, db):
 
 
 def test_periode_90_jours_acceptee(client, db):
+    # « du » et « au » sont inclus : du 1er janvier au 31 mars 2026 = exactement 90 jours
     seed(db)
     alpha = jeton(client, "000101", "alpha-test")
     reponse = client.get(
-        "/paiements", params={"du": "2026-01-01", "au": "2026-04-01"}, headers=entetes(alpha)
+        "/paiements", params={"du": "2026-01-01", "au": "2026-03-31"}, headers=entetes(alpha)
     )
     assert reponse.status_code == 200
+
+
+def test_periode_91_jours_refusee(client, db):
+    # Un jour de plus (1er avril) : 91 jours inclus, donc refusée sur les trois routes
+    seed(db)
+    alpha = jeton(client, "000101", "alpha-test")
+    for route in ("/paiements", "/releve", "/releve/export"):
+        reponse = client.get(
+            route, params={"du": "2026-01-01", "au": "2026-04-01"}, headers=entetes(alpha)
+        )
+        assert reponse.status_code == 400, route
+        assert "90 jours" in reponse.json()["detail"]
+
+
+def test_periode_d_un_seul_jour_acceptee(client, db):
+    seed(db)
+    alpha = jeton(client, "000101", "alpha-test")
+    reponse = client.get(
+        "/releve", params={"du": "2026-11-22", "au": "2026-11-22"}, headers=entetes(alpha)
+    )
+    assert reponse.status_code == 200
+    assert reponse.json()["nb_confirmes"] == 2
 
 
 def test_bornes_journee_incluses(client, db):

@@ -3,6 +3,7 @@
 import csv
 import io
 from datetime import date, datetime, time
+from typing import Annotated
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -12,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_session, marchand_isole
+from app.erreurs import ErreurReponse
 from app.masquage import masquer_telephone
 from app.models import Paiement, Utilisateur
 
@@ -20,6 +22,37 @@ router = APIRouter(tags=["relevés"])
 DOUALA = ZoneInfo("Africa/Douala")
 PAR_PAGE = 20
 STATUTS_VALIDES = {"CONFIRME", "EN_ATTENTE", "REFUSE"}
+# Un relevé couvre au plus 90 jours, « du » et « au » inclus (voir bornes_periode)
+MAX_JOURS_PERIODE = 90
+
+# --- Paramètres communs, documentés une seule fois dans OpenAPI --------------------------
+Du = Annotated[
+    date,
+    Query(description="Premier jour de la période (inclus), au format AAAA-MM-JJ.", examples=["2026-11-01"]),
+]
+Au = Annotated[
+    date,
+    Query(description="Dernier jour de la période (inclus), au format AAAA-MM-JJ.", examples=["2026-11-30"]),
+]
+
+# --- Erreurs communes aux routes du marchand, documentées dans OpenAPI -------------------
+REPONSES_MARCHAND = {
+    400: {
+        "model": ErreurReponse,
+        "description": (
+            "Requête invalide : date absente ou mal formée, « du » après « au », "
+            f"période de plus de {MAX_JOURS_PERIODE} jours, statut inconnu."
+        ),
+    },
+    401: {
+        "model": ErreurReponse,
+        "description": "Non authentifié : jeton absent, invalide ou expiré.",
+    },
+    403: {
+        "model": ErreurReponse,
+        "description": "Accès refusé : route réservée au rôle MARCHAND, ou tentative de viser un autre marchand.",
+    },
+}
 
 
 def bornes_periode(du: date, au: date) -> tuple[datetime, datetime]:
@@ -27,8 +60,13 @@ def bornes_periode(du: date, au: date) -> tuple[datetime, datetime]:
         raise HTTPException(
             status_code=400, detail="La date « du » doit être antérieure ou égale à la date « au »."
         )
-    if (au - du).days > 90:
-        raise HTTPException(status_code=400, detail="La période ne peut pas dépasser 90 jours.")
+    # « du » et « au » sont inclus : du 1er au 1er = 1 jour, du 1er janvier au 31 mars = 90 jours
+    nombre_de_jours = (au - du).days + 1
+    if nombre_de_jours > MAX_JOURS_PERIODE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"La période ne peut pas dépasser {MAX_JOURS_PERIODE} jours (« du » et « au » inclus).",
+        )
     # Bornes incluses en heure Africa/Douala ; time.max couvre toute la dernière seconde
     debut = datetime.combine(du, time.min, tzinfo=DOUALA)
     fin = datetime.combine(au, time.max, tzinfo=DOUALA)
@@ -98,12 +136,26 @@ def _totaux(session: Session, marchand: Utilisateur, debut: datetime, fin: datet
     )
 
 
-@router.get("/paiements", response_model=PagePaiements)
+@router.get(
+    "/paiements",
+    response_model=PagePaiements,
+    summary="Mes paiements sur une période",
+    description=(
+        "Liste paginée (20 par page, du plus récent au plus ancien) des paiements du marchand "
+        "connecté sur la période, tous statuts confondus sauf filtre. Les numéros de téléphone sont "
+        "masqués (`6XX XX X0 01`). Les frais, la commission et le net sont `null` pour les paiements "
+        "non CONFIRME. Le marchand est déterminé par le jeton, jamais par un paramètre."
+    ),
+    responses=REPONSES_MARCHAND,
+)
 def paiements(
-    du: date,
-    au: date,
-    statut: str | None = None,
-    page: int = Query(1, ge=1),
+    du: Du,
+    au: Au,
+    statut: Annotated[
+        str | None,
+        Query(description="Filtre facultatif : CONFIRME, EN_ATTENTE ou REFUSE.", examples=["CONFIRME"]),
+    ] = None,
+    page: Annotated[int, Query(ge=1, description="Numéro de page, à partir de 1.")] = 1,
     session: Session = Depends(get_session),
     marchand: Utilisateur = Depends(marchand_isole),
 ):
@@ -133,10 +185,19 @@ def paiements(
     )
 
 
-@router.get("/releve", response_model=ReleveReponse)
+@router.get(
+    "/releve",
+    response_model=ReleveReponse,
+    summary="Mes totaux sur une période",
+    description=(
+        "Totaux du marchand connecté : nombre de paiements CONFIRME, montant brut, frais réseau, "
+        "commission et net. Seuls les paiements CONFIRME sont additionnés. Montants en FCFA entiers."
+    ),
+    responses=REPONSES_MARCHAND,
+)
 def releve(
-    du: date,
-    au: date,
+    du: Du,
+    au: Au,
     session: Session = Depends(get_session),
     marchand: Utilisateur = Depends(marchand_isole),
 ):
@@ -182,10 +243,25 @@ def _generateur_csv(lignes: list[Paiement], totaux: ReleveReponse):
     yield produire()
 
 
-@router.get("/releve/export")
+@router.get(
+    "/releve/export",
+    summary="Exporter mon relevé en CSV",
+    description=(
+        "Fichier CSV (UTF-8) de tous les paiements du marchand connecté sur la période, avec une "
+        "dernière ligne de totaux calculée sur les paiements CONFIRME. Numéros de téléphone masqués. "
+        "Les frais, commission et net des paiements non CONFIRME sont vides."
+    ),
+    responses={
+        **REPONSES_MARCHAND,
+        200: {
+            "description": "Fichier CSV à télécharger.",
+            "content": {"text/csv": {"schema": {"type": "string"}}},
+        },
+    },
+)
 def exporter_releve(
-    du: date,
-    au: date,
+    du: Du,
+    au: Au,
     session: Session = Depends(get_session),
     marchand: Utilisateur = Depends(marchand_isole),
 ):
