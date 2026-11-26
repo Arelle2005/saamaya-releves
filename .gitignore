@@ -10,3 +10,5 @@ venv/
 # Frontend
 node_modules/
 dist/
+.run-backend.ps1
+.run-frontend.ps1
