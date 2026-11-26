@@ -12,6 +12,8 @@ os.environ["JWT_SECRET"] = "secret-pour-les-tests-saamaya-32"
 os.environ["ADMIN_PASSWORD"] = "admin-test"
 os.environ["MARCHAND_000101_PASSWORD"] = "alpha-test"
 os.environ["MARCHAND_000102_PASSWORD"] = "gamma-test"
+# Valeur fixe : un COOKIE_SECURE=true dans backend/.env ne doit pas changer les résultats des tests
+os.environ["COOKIE_SECURE"] = "false"
 if os.environ.get("TEST_DATABASE_URL"):
     os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
 
@@ -41,7 +43,10 @@ def db(_schema):
     # Repartir d'une base vide à chaque test (noms de tables fixes, pas de données utilisateur)
     with engine.begin() as connexion:
         connexion.execute(
-            text("TRUNCATE import_lignes, imports, paiements, utilisateurs, marchands RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE import_lignes, imports, paiements, tentatives_connexion, "
+                "utilisateurs, marchands RESTART IDENTITY CASCADE"
+            )
         )
     initialiser()
     with SessionLocal() as session:

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from sqlalchemy import select
 
-from app.models import Utilisateur
+from app.models import TentativeConnexion
 from app.securite import decoder_jeton
 
 SECRET_TEST = "secret-pour-les-tests-saamaya-32"
@@ -69,8 +69,8 @@ def test_succes_remet_le_compteur_a_zero(client):
 def test_blocage_expire_puis_connexion_ok(client, db):
     for _ in range(5):
         connexion(client, mot_de_passe="faux")
-    admin = db.scalar(select(Utilisateur).where(Utilisateur.identifiant == "admin"))
-    admin.bloque_jusqua = datetime.now(timezone.utc) - timedelta(seconds=1)
+    ligne = db.scalar(select(TentativeConnexion).where(TentativeConnexion.identifiant == "admin"))
+    ligne.bloque_jusqua = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit()
     assert connexion(client).status_code == 200
 
